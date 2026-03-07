@@ -34,7 +34,7 @@ fn parses_timeops_and_console() {
 #[test]
 fn parses_arrays_and_introspection() {
     let input = r#"
-        contract Complex(bytes20 hash) {
+        contract Complex(byte[20] hash) {
             function verify(int idx) {
                 int a = [1, 2, 3][0];
                 int b = (a * 2).split(1).length;
@@ -49,4 +49,26 @@ fn parses_arrays_and_introspection() {
     if let Err(err) = result {
         panic!("{}", err);
     }
+}
+
+#[test]
+fn parses_input_sigscript_and_rejects_output_sigscript() {
+    let input_ok = r#"
+        contract SigScriptCheck() {
+            function verify(int idx) {
+                require(tx.inputs[idx].sigScript.length >= 0);
+            }
+        }
+    "#;
+    assert!(parse_source_file(input_ok).is_ok());
+
+    let input_bad = r#"
+        contract SigScriptCheck() {
+            function verify(int idx) {
+                // outputs don't have a sigScript field, so parsing is expected to fail
+                require(tx.outputs[idx].sigScript.length >= 0);
+            }
+        }
+    "#;
+    assert!(parse_source_file(input_bad).is_err());
 }

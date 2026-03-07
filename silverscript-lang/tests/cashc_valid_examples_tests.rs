@@ -41,7 +41,7 @@ fn parse_contract_param_types(source: &str) -> Vec<String> {
     result
 }
 
-fn dummy_expr_for_type(type_name: &str) -> Expr {
+fn dummy_expr_for_type(type_name: &str) -> Expr<'static> {
     if type_name == "int" {
         return 0i64.into();
     }
@@ -51,20 +51,33 @@ fn dummy_expr_for_type(type_name: &str) -> Expr {
     if type_name == "string" {
         return String::from("aa").into();
     }
-    if type_name == "bytes" {
-        return Vec::<u8>::new().into();
+    if type_name == "byte[]" {
+        return Vec::<u8>::new().into(); // Empty byte array
     }
     if type_name == "pubkey" {
-        return vec![0u8; 32].into();
+        return vec![0u8; 32].into(); // Converts to Expr::Array of Expr::Byte
     }
     if type_name == "sig" {
-        return vec![0u8; 64].into();
+        return vec![0u8; 65].into();
     }
     if type_name == "datasig" {
         return vec![0u8; 64].into();
     }
+    // Internal: Handle bytesN (used in internal representation, not parsed from source)
     if let Some(size) = type_name.strip_prefix("bytes").and_then(|v| v.parse::<usize>().ok()) {
         return vec![0u8; size].into();
+    }
+    // Support byte[N] syntax
+    if let Some(bracket_pos) = type_name.find('[') {
+        if type_name.ends_with(']') {
+            let base_type = &type_name[..bracket_pos];
+            let size_str = &type_name[bracket_pos + 1..type_name.len() - 1];
+            if base_type == "byte" {
+                if let Ok(size) = size_str.parse::<usize>() {
+                    return vec![0u8; size].into();
+                }
+            }
+        }
     }
     0i64.into()
 }
@@ -112,7 +125,7 @@ fn build_sigscript(args: &[ArgValue], selector: Option<i64>) -> Vec<u8> {
     builder.drain()
 }
 
-fn selector_for_compiled(compiled: &CompiledContract, function_name: &str) -> Option<i64> {
+fn selector_for_compiled(compiled: &CompiledContract<'_>, function_name: &str) -> Option<i64> {
     if compiled.without_selector {
         None
     } else {
@@ -329,7 +342,7 @@ fn runs_cashc_valid_examples() {
                 assert!(result.is_ok(), "{example} failed: {}", result.unwrap_err());
             }
             "covenant.sil" => {
-                // Unsatisfiable: requires `this.activeBytecode == 0x00`.
+                // Unsatisfiable: requires `this.activeScriptPubKey == 0x00`.
                 let constructor_args = vec![1i64.into()];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
                 let selector = selector_for_compiled(&compiled, "spend");
@@ -517,12 +530,9 @@ fn runs_cashc_valid_examples() {
                 );
                 tx.tx.inputs[0].signature_script = sigscript;
                 let result = execute_tx(tx, utxo, reused);
-                if example == "log_intermediate_results.sil" {
-                    // Unsatisfiable in this runtime: the script leaves an extra stack item (CLEANSTACK).
-                    assert!(result.is_err(), "{example} should fail");
-                } else {
-                    assert!(result.is_ok(), "{example} failed: {}", result.unwrap_err());
-                }
+                // Note: log_intermediate_results.sil now passes with byte[N] syntax
+                // (previously failed with bytesN due to CLEANSTACK)
+                assert!(result.is_ok(), "{example} failed: {}", result.unwrap_err());
             }
             "multifunction.sil" => {
                 let recipient = random_keypair();
@@ -855,7 +865,7 @@ fn runs_cashc_valid_examples() {
                 assert!(result.is_ok(), "{example} failed: {}", result.unwrap_err());
             }
             "slice.sil" | "slice_variable_parameter.sil" => {
-                // Unsatisfiable in this runtime: it expects a P2PKH locking bytecode in the active input.
+                // Valid in this runtime with current slice lowering.
                 let constructor_args = vec![vec![0u8; 20].into()];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
                 let selector = selector_for_compiled(&compiled, "spend");
@@ -869,7 +879,7 @@ fn runs_cashc_valid_examples() {
                 );
                 tx.tx.inputs[0].signature_script = sigscript;
                 let result = execute_tx(tx, utxo, reused);
-                assert!(result.is_err(), "{example} should fail");
+                assert!(result.is_ok(), "{example} failed: {}", result.unwrap_err());
             }
             "slice_optimised.sil" => {
                 // Unsatisfiable in this runtime: NUM2BIN rejects target sizes > 8 (slice needs 20).
@@ -889,7 +899,7 @@ fn runs_cashc_valid_examples() {
                 assert!(result.is_err(), "{example} should fail");
             }
             "split_or_slice_signature.sil" => {
-                // Unsatisfiable in this runtime: signature slicing triggers invalid range errors.
+                // Valid in this runtime with current slice lowering.
                 let mut signature = vec![0u8; 64];
                 signature.push(0x01);
                 let constructor_args = vec![signature.into()];
@@ -905,7 +915,7 @@ fn runs_cashc_valid_examples() {
                 );
                 tx.tx.inputs[0].signature_script = sigscript;
                 let result = execute_tx(tx, utxo, reused);
-                assert!(result.is_err(), "{example} should fail");
+                assert!(result.is_ok(), "{example} failed: {}", result.unwrap_err());
             }
             "split_size.sil" => {
                 // Unsatisfiable in this runtime: `b.length / 2` leaves `b` on the stack, causing invalid substring ranges.
